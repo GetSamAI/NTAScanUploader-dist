@@ -77,6 +77,23 @@ Or use Windows' native tools — WinSW registers a standard Windows service, so 
 
 Override with `-InstallDir` or `-ServiceName` on any command.
 
+### Verify the install
+
+From any folder (doesn't need to `cd` into the install dir):
+
+```powershell
+# Is the service registered and running?
+Get-Service NTAScanUploader
+
+# Will it auto-start on reboot? (Expect: StartType = Automatic)
+Get-Service NTAScanUploader | Select-Object Name, Status, StartType
+
+# Tail the app log to see it processing files
+Get-Content D:\ScanUploader\uploader_log.log -Wait -Tail 20
+```
+
+Or, from inside `D:\ScanUploader`: `.\install.ps1 -Action status` (shows service state + last 10 log lines) and `.\install.ps1 -Action logs` (live tail).
+
 ## What this repo contains
 
 - `install.ps1` — the installer / upgrader script (mirrored from the private source repo on every build)
