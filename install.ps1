@@ -94,7 +94,7 @@ function Ensure-WinSW {
 }
 
 function Write-WinSWConfig {
-    # Produces D:\ScanUploader\NTAScanUploader.xml — the WinSW service config
+    # Produces D:\ScanUploader\NTAScanUploader.xml - the WinSW service config
     # that wraps upload_script.exe with auto-restart on any non-graceful exit.
     $cfg = Get-WinSWConfigPath
     $xml = @"
@@ -207,7 +207,7 @@ function Prompt-ConfigInteractive {
 }
 
 function Build-TemplateConfig {
-    # Only api_key, base_url, and deviceCode are left blank — everything else
+    # Only api_key, base_url, and deviceCode are left blank - everything else
     # has a sensible default the installer pre-fills so the user only has to
     # edit three lines of config.json.
     $apiKey     = if ($script:ApiKey)     { $script:ApiKey }     else { "" }
@@ -281,7 +281,7 @@ function Update-ConfigIfNeeded {
         return
     }
 
-    Write-Host "Migrating config.json — adding $($merge.Added.Count) new default key(s):"
+    Write-Host "Migrating config.json - adding $($merge.Added.Count) new default key(s):"
     foreach ($k in $merge.Added) { Write-Host "  + $k" }
     Write-JsonUtf8 -Path $CfgPath -Data $merge.Result
 }
@@ -302,7 +302,7 @@ function Wait-ServiceStopped {
 function Do-Install {
     Require-Admin
     if (Service-Exists) {
-        Write-Host "Service '$ServiceName' already exists — switching to upgrade."
+        Write-Host "Service '$ServiceName' already exists - switching to upgrade."
         Do-Upgrade
         return
     }
@@ -368,7 +368,7 @@ function Do-Install {
 function Do-Upgrade {
     Require-Admin
     if (-not (Service-Exists)) {
-        Write-Host "Service '$ServiceName' does not exist — switching to install."
+        Write-Host "Service '$ServiceName' does not exist - switching to install."
         Do-Install
         return
     }
