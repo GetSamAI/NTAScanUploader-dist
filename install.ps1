@@ -1,12 +1,12 @@
 <#
 .SYNOPSIS
-  Install, upgrade, or manage the NTAScanUploader Windows service (NSSM-based).
+  Install, upgrade, or manage the NTAScanUploader Windows service (WinSW-based).
 
 .DESCRIPTION
   Run from an elevated PowerShell:
 
     # Install or upgrade (auto-detects existing service)
-    irm https://raw.githubusercontent.com/GetSamAI/NTAScanUploader/main/install.ps1 | iex
+    irm https://raw.githubusercontent.com/GetSamAI/NTAScanUploader-dist/main/install.ps1 | iex
 
   Or download and use explicit actions:
 
@@ -26,7 +26,7 @@
 param(
     [ValidateSet("auto","install","upgrade","uninstall","start","stop","restart","status","logs")]
     [string]$Action      = "auto",
-    [string]$InstallDir  = "D:\NTAScanUploader",
+    [string]$InstallDir  = "D:\ScanUploader",
     [string]$ServiceName = "NTAScanUploader",
     [string]$ApiKey,
     [string]$BaseUrl,
@@ -34,7 +34,7 @@ param(
     [string]$WatchPath,
     [switch]$SkipConfig,
     [string]$GitHubRepo  = "GetSamAI/NTAScanUploader-dist",
-    [string]$NssmUrl     = "https://nssm.cc/release/nssm-2.24.zip"
+    [string]$WinSWUrl    = "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW-x64.exe"
 )
 
 $ErrorActionPreference = "Stop"
@@ -74,27 +74,53 @@ function Ensure-LocalScript {
     }
 }
 
-function Ensure-Nssm {
-    $nssm = Join-Path $InstallDir "nssm.exe"
-    if (Test-Path $nssm) { return $nssm }
+function Get-WinSWPath {
+    # WinSW convention: the wrapper executable and its XML config must share the
+    # same base name. We name them after the service so the XML is self-describing.
+    return Join-Path $InstallDir "$ServiceName.exe"
+}
 
-    Write-Host "Downloading NSSM from $NssmUrl ..."
-    $tmp = Join-Path $env:TEMP ("nssm-" + [guid]::NewGuid().ToString("N"))
-    New-Item -ItemType Directory -Force -Path $tmp | Out-Null
-    $zip = Join-Path $tmp "nssm.zip"
-    Invoke-WebRequest -Uri $NssmUrl -OutFile $zip -UseBasicParsing
+function Get-WinSWConfigPath {
+    return Join-Path $InstallDir "$ServiceName.xml"
+}
 
-    Expand-Archive -Path $zip -DestinationPath $tmp -Force
-    $arch = if ([Environment]::Is64BitOperatingSystem) { "win64" } else { "win32" }
-    $src = Get-ChildItem -Path $tmp -Recurse -Filter "nssm.exe" |
-        Where-Object { $_.DirectoryName -match [regex]::Escape($arch) } |
-        Select-Object -First 1
-    if (-not $src) {
-        throw "Could not locate $arch\nssm.exe inside the downloaded NSSM archive."
-    }
-    Copy-Item -Path $src.FullName -Destination $nssm -Force
-    Remove-Item -Path $tmp -Recurse -Force -ErrorAction SilentlyContinue
-    return $nssm
+function Ensure-WinSW {
+    $winsw = Get-WinSWPath
+    if (Test-Path $winsw) { return $winsw }
+
+    Write-Host "Downloading WinSW from $WinSWUrl ..."
+    Invoke-WebRequest -Uri $WinSWUrl -OutFile $winsw -UseBasicParsing
+    return $winsw
+}
+
+function Write-WinSWConfig {
+    # Produces D:\ScanUploader\NTAScanUploader.xml — the WinSW service config
+    # that wraps upload_script.exe with auto-restart on any non-graceful exit.
+    $cfg = Get-WinSWConfigPath
+    $xml = @"
+<service>
+  <id>$ServiceName</id>
+  <name>NTA Scan Uploader</name>
+  <description>Uploads scanner results to the NTA backend</description>
+  <executable>%BASE%\upload_script.exe</executable>
+  <workingdirectory>%BASE%</workingdirectory>
+  <priority>Normal</priority>
+  <stoptimeout>30 sec</stoptimeout>
+  <stopparentprocessfirst>true</stopparentprocessfirst>
+  <startmode>Automatic</startmode>
+  <onfailure action="restart" delay="5 sec"/>
+  <onfailure action="restart" delay="10 sec"/>
+  <onfailure action="restart" delay="30 sec"/>
+  <resetfailure>1 hour</resetfailure>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>5</keepFiles>
+  </log>
+</service>
+"@
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($cfg, $xml, $utf8NoBom)
+    return $cfg
 }
 
 function Get-LatestReleaseAsset {
@@ -260,28 +286,17 @@ function Update-ConfigIfNeeded {
     Write-JsonUtf8 -Path $CfgPath -Data $merge.Result
 }
 
-function Register-NssmService {
-    param([string]$Nssm, [string]$ExePath)
-
-    Write-Host "Registering service '$ServiceName' with NSSM..."
-    & $Nssm install $ServiceName $ExePath | Out-Null
-    & $Nssm set $ServiceName AppDirectory     $InstallDir | Out-Null
-    & $Nssm set $ServiceName DisplayName      "NTA Scan Uploader" | Out-Null
-    & $Nssm set $ServiceName Description      "Uploads scanner results to the NTA backend" | Out-Null
-    & $Nssm set $ServiceName Start            SERVICE_AUTO_START | Out-Null
-    & $Nssm set $ServiceName ObjectName       LocalSystem | Out-Null
-
-    # Restart on any non-graceful exit
-    & $Nssm set $ServiceName AppExit Default  Restart | Out-Null
-    & $Nssm set $ServiceName AppRestartDelay  5000 | Out-Null
-    & $Nssm set $ServiceName AppThrottle      10000 | Out-Null
-
-    # Capture stdout/stderr with rotation so crashes leave a trail
-    & $Nssm set $ServiceName AppStdout        (Join-Path $InstallDir "service_stdout.log") | Out-Null
-    & $Nssm set $ServiceName AppStderr        (Join-Path $InstallDir "service_stderr.log") | Out-Null
-    & $Nssm set $ServiceName AppRotateFiles   1 | Out-Null
-    & $Nssm set $ServiceName AppRotateOnline  1 | Out-Null
-    & $Nssm set $ServiceName AppRotateBytes   10485760 | Out-Null
+function Wait-ServiceStopped {
+    param([int]$TimeoutSeconds = 30)
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ($true) {
+        $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+        if ($null -eq $svc -or $svc.Status -eq "Stopped") { return }
+        if ((Get-Date) -gt $deadline) {
+            throw "Service '$ServiceName' did not stop within $TimeoutSeconds seconds."
+        }
+        Start-Sleep -Milliseconds 500
+    }
 }
 
 function Do-Install {
@@ -294,7 +309,8 @@ function Do-Install {
 
     Ensure-InstallDir
     Ensure-LocalScript
-    $nssm = Ensure-Nssm
+    $winsw = Ensure-WinSW
+    Write-WinSWConfig | Out-Null
 
     $release = Get-LatestReleaseAsset
     $exe = Join-Path $InstallDir "upload_script.exe"
@@ -317,11 +333,12 @@ function Do-Install {
         Write-Host "Keeping existing $cfgPath"
     }
 
-    Register-NssmService -Nssm $nssm -ExePath $exe
+    Write-Host "Registering service '$ServiceName' with WinSW..."
+    & $winsw install | Out-Null
 
     if ($configFilledIn) {
         Write-Host "Starting service..."
-        & $nssm start $ServiceName | Out-Null
+        & $winsw start | Out-Null
     } else {
         Write-Host ""
         Write-Host "Service registered but NOT started because config.json still has placeholders."
@@ -340,9 +357,9 @@ function Do-Install {
     Write-Host "Service name: $ServiceName"
     Write-Host ""
     Write-Host "Manage the service:"
-    Write-Host "  .\install.ps1 -Action stop      (or: nssm stop $ServiceName)"
-    Write-Host "  .\install.ps1 -Action start     (or: nssm start $ServiceName)"
-    Write-Host "  .\install.ps1 -Action restart   (or: nssm restart $ServiceName)  # run after editing config.json"
+    Write-Host "  .\install.ps1 -Action stop      (or: Stop-Service $ServiceName)"
+    Write-Host "  .\install.ps1 -Action start     (or: Start-Service $ServiceName)"
+    Write-Host "  .\install.ps1 -Action restart   (run after editing config.json)"
     Write-Host "  .\install.ps1 -Action status"
     Write-Host "  .\install.ps1 -Action logs"
     Write-Host "  services.msc  ->  '$ServiceName'"
@@ -358,15 +375,11 @@ function Do-Upgrade {
 
     Ensure-InstallDir
     Ensure-LocalScript
-    $nssm = Ensure-Nssm
+    $winsw = Ensure-WinSW
 
     Write-Host "Stopping service..."
-    & $nssm stop $ServiceName | Out-Null
-    $deadline = (Get-Date).AddSeconds(30)
-    while ((Get-Service -Name $ServiceName).Status -ne "Stopped") {
-        if ((Get-Date) -gt $deadline) { throw "Service '$ServiceName' did not stop within 30s." }
-        Start-Sleep -Milliseconds 500
-    }
+    Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+    Wait-ServiceStopped -TimeoutSeconds 30
 
     $ts = Get-Date -Format "yyyyMMdd_HHmmss"
     $backupDir = Join-Path $InstallDir "backup_$ts"
@@ -385,23 +398,27 @@ function Do-Upgrade {
     $exe = Join-Path $InstallDir "upload_script.exe"
     Download-File -Url $release.Url -Dest $exe
 
+    # Refresh the WinSW config in case the installer shipped new service settings
+    Write-WinSWConfig | Out-Null
+
     $cfgPath = Join-Path $InstallDir "config.json"
     Update-ConfigIfNeeded -CfgPath $cfgPath
 
     Write-Host "Starting service..."
-    & $nssm start $ServiceName | Out-Null
+    Start-Service -Name $ServiceName
     Write-Host "Upgrade complete. Now running release: $($release.Tag)"
 }
 
 function Do-Uninstall {
     Require-Admin
     if (Service-Exists) {
-        $nssm = Join-Path $InstallDir "nssm.exe"
-        if (-not (Test-Path $nssm)) { $nssm = Ensure-Nssm }
+        $winsw = Get-WinSWPath
+        if (-not (Test-Path $winsw)) { $winsw = Ensure-WinSW }
         Write-Host "Stopping service..."
-        & $nssm stop $ServiceName | Out-Null
+        Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+        Wait-ServiceStopped -TimeoutSeconds 30
         Write-Host "Removing service..."
-        & $nssm remove $ServiceName confirm | Out-Null
+        & $winsw uninstall | Out-Null
     } else {
         Write-Host "Service '$ServiceName' not registered."
     }
@@ -411,9 +428,14 @@ function Do-Uninstall {
 function Do-ServiceAction {
     param([string]$Verb)
     Require-Admin
-    $nssm = Join-Path $InstallDir "nssm.exe"
-    if (-not (Test-Path $nssm)) { throw "NSSM not found at $nssm. Run -Action install first." }
-    & $nssm $Verb $ServiceName
+    if (-not (Service-Exists)) {
+        throw "Service '$ServiceName' is not registered. Run the installer first."
+    }
+    switch ($Verb) {
+        "start"   { Start-Service   -Name $ServiceName }
+        "stop"    { Stop-Service    -Name $ServiceName -Force }
+        "restart" { Restart-Service -Name $ServiceName -Force }
+    }
 }
 
 function Do-Status {
