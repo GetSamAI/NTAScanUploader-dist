@@ -106,7 +106,7 @@ function Write-WinSWConfig {
   <workingdirectory>%BASE%</workingdirectory>
   <priority>Normal</priority>
   <stoptimeout>30 sec</stoptimeout>
-  <stopparentprocessfirst>true</stopparentprocessfirst>
+  <stopparentprocessfirst>false</stopparentprocessfirst>
   <startmode>Automatic</startmode>
   <onfailure action="restart" delay="5 sec"/>
   <onfailure action="restart" delay="10 sec"/>
