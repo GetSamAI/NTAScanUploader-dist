@@ -299,6 +299,23 @@ function Wait-ServiceStopped {
     }
 }
 
+function Stop-ServiceCleanly {
+    # Stops the service AND force-kills any lingering upload_script.exe.
+    # Older installs shipped a WinSW XML with stopparentprocessfirst=true, which
+    # kills the PyInstaller bootloader stub but leaves the worker child running
+    # as an orphan. Any subsequent upgrade/restart would then race that orphan,
+    # so always sweep stragglers before continuing.
+    Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+    Wait-ServiceStopped -TimeoutSeconds 30
+    $procs = Get-Process -Name "upload_script" -ErrorAction SilentlyContinue
+    if ($procs) {
+        $count = ($procs | Measure-Object).Count
+        Write-Host "Cleaning up $count lingering upload_script.exe process(es) (legacy WinSW config)..."
+        $procs | Stop-Process -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 1
+    }
+}
+
 function Do-Install {
     Require-Admin
     if (Service-Exists) {
@@ -378,8 +395,7 @@ function Do-Upgrade {
     $winsw = Ensure-WinSW
 
     Write-Host "Stopping service..."
-    Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
-    Wait-ServiceStopped -TimeoutSeconds 30
+    Stop-ServiceCleanly
 
     $ts = Get-Date -Format "yyyyMMdd_HHmmss"
     $backupDir = Join-Path $InstallDir "backup_$ts"
@@ -415,8 +431,7 @@ function Do-Uninstall {
         $winsw = Get-WinSWPath
         if (-not (Test-Path $winsw)) { $winsw = Ensure-WinSW }
         Write-Host "Stopping service..."
-        Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
-        Wait-ServiceStopped -TimeoutSeconds 30
+        Stop-ServiceCleanly
         Write-Host "Removing service..."
         & $winsw uninstall | Out-Null
     } else {
@@ -432,9 +447,9 @@ function Do-ServiceAction {
         throw "Service '$ServiceName' is not registered. Run the installer first."
     }
     switch ($Verb) {
-        "start"   { Start-Service   -Name $ServiceName }
-        "stop"    { Stop-Service    -Name $ServiceName -Force }
-        "restart" { Restart-Service -Name $ServiceName -Force }
+        "start"   { Start-Service -Name $ServiceName }
+        "stop"    { Stop-ServiceCleanly }
+        "restart" { Stop-ServiceCleanly; Start-Service -Name $ServiceName }
     }
 }
 
